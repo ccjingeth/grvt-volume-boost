@@ -3804,9 +3804,9 @@ class VolumeBoostGUI:
         outer = ttk.Frame(w, padding=12)
         outer.pack(fill=tk.BOTH, expand=True)
 
-        author = "撸毛小狗"
-        twitter_url = "https://x.com/LumaoDoggie"
-        ref_url = "https://grvt.io/?ref=lumaoDoggie"
+        author = "ccjing"
+        twitter_url = "https://x.com/ccjing_eth"
+        ref_url = "https://grvt.io/?ref=ccjing"
 
         ttk.Label(outer, text=f"{_('about.author')} {author}").grid(row=0, column=0, sticky="w", pady=(0, 8))
 
