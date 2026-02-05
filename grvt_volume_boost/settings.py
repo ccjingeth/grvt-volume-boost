@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
+
+from grvt_volume_boost.secure_files import ensure_private_dir
 
 
 def _env_int(name: str, default: int) -> int:
@@ -12,6 +15,24 @@ def _env_int(name: str, default: int) -> int:
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _runtime_data_root() -> Path:
+    """Writable app data root.
+
+    - Source runs keep using repo root for backward compatibility.
+    - Frozen app runs (PyInstaller) use per-user data dir.
+    """
+    if not getattr(sys, "frozen", False):
+        return REPO_ROOT
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "GRVTVolumeBoost"
+    if sys.platform.startswith("win"):
+        appdata = os.getenv("APPDATA")
+        if appdata:
+            return Path(appdata) / "GRVTVolumeBoost"
+        return Path.home() / "AppData" / "Roaming" / "GRVTVolumeBoost"
+    return Path.home() / ".local" / "share" / "grvt-volume-boost"
 
 ENV = (os.getenv("GRVT_ENV", "prod") or "prod").strip().lower()
 if ENV not in ("prod", "testnet"):
@@ -68,8 +89,11 @@ EDGE_URL = _env_url(
     default_testnet="https://edge.testnet.grvt.io",
 )
 
-SESSION_DIR = REPO_ROOT / ("session_testnet" if ENV == "testnet" else "session")
-COOKIE_CACHE_FILE = REPO_ROOT / ("grvt_cookie_cache_testnet.json" if ENV == "testnet" else "grvt_cookie_cache.json")
+DATA_ROOT = _runtime_data_root()
+SESSION_DIR = DATA_ROOT / ("session_testnet" if ENV == "testnet" else "session")
+COOKIE_CACHE_FILE = DATA_ROOT / ("grvt_cookie_cache_testnet.json" if ENV == "testnet" else "grvt_cookie_cache.json")
+ensure_private_dir(DATA_ROOT)
+ensure_private_dir(SESSION_DIR)
 
 # Signature expiration for EIP-712 order signing.
 # Docs: unix nanoseconds, capped at 30 days. Keep this conservative by default because

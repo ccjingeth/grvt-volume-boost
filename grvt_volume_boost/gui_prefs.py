@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 
+from grvt_volume_boost.secure_files import ensure_private_dir, restrict_file
+
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _PREFS_FILE = _REPO_ROOT / "grvt_gui_prefs.json"
@@ -22,8 +24,10 @@ def load_prefs() -> dict:
 
 def save_prefs(prefs: dict) -> None:
     try:
+        ensure_private_dir(_PREFS_FILE.parent)
         with open(_PREFS_FILE, "w", encoding="utf-8") as f:
             json.dump(prefs, f, indent=2)
+        restrict_file(_PREFS_FILE)
     except Exception:
         pass
 

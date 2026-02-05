@@ -21,6 +21,41 @@ English README: `README_en.md`.
 - Release 版本已打包 Playwright Chromium，扫码登录/刷新 Cookie 不需要额外安装浏览器。
 - 本工具会在本地生成 `session/`、`session_testnet/`、`grvt_cookie_cache*.json` 等文件（这些包含登录凭证），请勿分享。
 
+## macOS 客户端（.app）
+
+### 本地构建（推荐）
+
+在 macOS 上可以直接构建原生 `.app`：
+
+```bash
+./scripts/build_macos.sh
+open dist/GRVTVolumeBoost.app
+```
+
+说明：
+- 由于未签名，首次打开可能被 Gatekeeper 拦截。右键应用，选择“打开”即可。
+- 构建脚本会把 Playwright Chromium 一起打包进 `.app`，扫码登录可直接使用。
+- 在 macOS 中，`Capture QR` 使用系统截图工具（`screencapture -i`）框选二维码区域。
+- 首次使用 `Capture QR` 时，macOS 可能会要求“屏幕录制”权限；允许后重启应用即可正常截图扫码。
+
+### 一键脚本运行（无需手动装依赖）
+
+```bash
+./scripts/macos_client.sh run
+```
+
+可选命令：
+- `./scripts/macos_client.sh setup`：仅安装依赖和 Chromium
+- `./scripts/macos_client.sh build`：构建 `.app`
+- `./scripts/macos_client.sh doctor`：运行上线前体检（账号、Cookie、接口连通、安全配置）
+- 双击 `scripts/macos_client.command`：等价于 `run`
+
+### GitHub Release 构建产物
+
+仓库已新增 `macos-release` 工作流，打 Tag 后会生成：
+- `GRVTVolumeBoost-macos-arm64.zip`
+- `GRVTVolumeBoost-macos-x64.zip`
+
 ## Python 源码运行
 
 ### 1) 安装依赖
@@ -104,6 +139,14 @@ GUI 顶部可以切换：
 - `session/`、`session_testnet/`
 - `grvt_cookie_cache*.json`
 - `grvt_gui_prefs.json`
+
+## 安全加固（2026-02）
+
+- 会话目录默认限制为仅当前用户可访问（`700`）。
+- Cookie 缓存、浏览器 state、调试日志默认限制为仅当前用户可读写（`600`）。
+- 登录成功消息不再展示 cookie 前缀。
+- 默认不落盘保存二维码截图；仅在 `GRVT_SAVE_QR_DEBUG=1` 时才会保存。
+- 上线前验收清单见：`MAC_SECURITY_ACCEPTANCE.md`
 
 ## 开发者
 

@@ -1,0 +1,45 @@
+name: macos-release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-14
+            artifact_suffix: macos-arm64
+          - runner: macos-13
+            artifact_suffix: macos-x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build app bundle (PyInstaller)
+        run: |
+          ./scripts/build_macos.sh GRVTVolumeBoost volume_boost_gui.py dist playwright-browsers
+
+      - name: Zip artifact
+        run: |
+          name="GRVTVolumeBoost-${{ matrix.artifact_suffix }}"
+          rm -f "${name}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "dist/GRVTVolumeBoost.app" "${name}.zip"
+          ls -lh "${name}.zip"
+
+      - name: Release (tag builds)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            GRVTVolumeBoost-${{ matrix.artifact_suffix }}.zip

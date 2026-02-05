@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import queue
 import random
+import subprocess
 import sys
 import threading
 import time
@@ -44,6 +45,7 @@ from grvt_volume_boost.auth.session_state import (
     fetch_subaccounts,
     set_local_storage_values,
 )
+from grvt_volume_boost.secure_files import ensure_private_dir, restrict_file
 from grvt_volume_boost.settings import ORIGIN, SESSION_DIR
 from grvt_volume_boost.direction import (
     SIDE_POLICY_ACCOUNT1_LONG,
@@ -270,7 +272,7 @@ class SetupWindow(tk.Toplevel):
         super().__init__(parent)
         self.app = app
         self.title(_("setup.title"))
-        _set_scaled_geometry(self, 560, 320)
+        _set_scaled_geometry(self, 760, 460)
         # QR codes are one-time use; store the decoded URL so we don't depend on re-decoding the image later.
         self._qr_payloads: dict[int, dict] = {}  # account_num -> {"url": str, "image": PIL.Image | None}
         self._login_in_progress: set[int] = set()
@@ -351,22 +353,32 @@ class SetupWindow(tk.Toplevel):
     def _build_account_block(self, parent: tk.Widget, account_num: int, session_var: tk.StringVar, status_var: tk.StringVar) -> None:
         frame = ttk.LabelFrame(parent, text=_("setup.account", n=account_num), padding=10)
         frame.pack(fill=tk.X, padx=5, pady=6)
+        frame.columnconfigure(0, weight=0)
+        frame.columnconfigure(1, weight=1)
 
         ttk.Label(frame, text=_("setup.session")).grid(row=0, column=0, sticky=tk.W)
-        ttk.Label(frame, textvariable=session_var).grid(row=0, column=1, sticky=tk.W, padx=6)
+        ttk.Label(frame, textvariable=session_var, wraplength=_px(self, 560), justify=tk.LEFT).grid(
+            row=0, column=1, sticky=tk.W, padx=6
+        )
 
         btns = ttk.Frame(frame)
-        btns.grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(8, 2))
+        btns.grid(row=1, column=0, columnspan=2, sticky=tk.EW, pady=(8, 2))
+        btns.columnconfigure(0, weight=1)
+        btns.columnconfigure(1, weight=1)
 
         b_capture = ttk.Button(btns, text=_("setup.capture"), command=lambda: self._capture_qr(account_num))
         b_select = ttk.Button(btns, text=_("setup.select_image"), command=lambda: self._select_qr_image(account_num))
         b_login = ttk.Button(btns, text=_("setup.login"), command=lambda: self._validate_qr(account_num))
         b_remove = ttk.Button(btns, text=_("setup.remove_session"), command=lambda: self._remove_session(account_num))
 
-        for b in (b_capture, b_select, b_login, b_remove):
-            b.pack(side=tk.LEFT, padx=2)
+        b_capture.grid(row=0, column=0, sticky=tk.EW, padx=2, pady=2)
+        b_select.grid(row=0, column=1, sticky=tk.EW, padx=2, pady=2)
+        b_login.grid(row=1, column=0, sticky=tk.EW, padx=2, pady=2)
+        b_remove.grid(row=1, column=1, sticky=tk.EW, padx=2, pady=2)
 
-        ttk.Label(frame, textvariable=status_var, wraplength=520).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(6, 0))
+        ttk.Label(frame, textvariable=status_var, wraplength=_px(self, 620), justify=tk.LEFT).grid(
+            row=2, column=0, columnspan=2, sticky=tk.W, pady=(6, 0)
+        )
 
         self._account_buttons[account_num] = [b_capture, b_select, b_login, b_remove]
 
@@ -388,7 +400,43 @@ class SetupWindow(tk.Toplevel):
         status_var = self.acc1_qr_status if account_num == 1 else self.acc2_qr_status
         status_var.set(_("setup.select_region"))
 
-        # Hide window temporarily
+        # macOS: use native screenshot tool so users can capture QR region with the
+        # familiar system crosshair flow.
+        if sys.platform == "darwin":
+            try:
+                from PIL import Image
+
+                ensure_private_dir(SESSION_DIR)
+                tmp_path = SESSION_DIR / f"qr_capture_tmp_account_{account_num}.png"
+                if tmp_path.exists():
+                    tmp_path.unlink()
+
+                self.withdraw()
+                self.update()
+                time.sleep(0.2)
+                cp = subprocess.run(["screencapture", "-i", "-x", str(tmp_path)], check=False)
+                self.deiconify()
+                self.lift()
+                self.focus_force()
+
+                if cp.returncode != 0 or not tmp_path.exists() or tmp_path.stat().st_size <= 0:
+                    status_var.set(_("setup.capture_cancelled"))
+                    return
+
+                with Image.open(tmp_path) as im:
+                    image = im.convert("RGB").copy()
+                self._on_qr_captured(account_num, image)
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return
+            except Exception as e:
+                self.deiconify()
+                status_var.set(f"{_('setup.capture_cancelled')}: {e}")
+                return
+
+        # Windows/Linux: use built-in overlay selector.
         self.withdraw()
         self.update()
         time.sleep(0.3)
@@ -408,9 +456,12 @@ class SetupWindow(tk.Toplevel):
 
         # Save capture for debugging and to help users confirm selection.
         try:
-            SESSION_DIR.mkdir(exist_ok=True)
-            capture_path = SESSION_DIR / f"qr_capture_account_{account_num}.png"
-            image.save(capture_path)
+            capture_path = None
+            if os.getenv("GRVT_SAVE_QR_DEBUG", "").strip() == "1":
+                ensure_private_dir(SESSION_DIR)
+                capture_path = SESSION_DIR / f"qr_capture_account_{account_num}.png"
+                image.save(capture_path)
+                restrict_file(capture_path)
         except Exception:
             capture_path = None
 
@@ -731,59 +782,12 @@ class QRRegionSelector(tk.Toplevel):
         def do_capture(attempt: int = 1) -> None:
             try:
                 from PIL import Image, ImageGrab
-                import ctypes
-                from ctypes import wintypes
 
                 # Give the compositor time to fully remove the overlay.
                 time.sleep(0.25 + (attempt - 1) * 0.15)
 
                 tk_w = max(1, int(self.winfo_screenwidth()))
                 tk_h = max(1, int(self.winfo_screenheight()))
-
-                user32 = ctypes.WinDLL("user32", use_last_error=True)
-                gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
-
-                # Fix ctypes prototypes (avoid 64-bit overflow / "bad window path"-like failures).
-                user32.GetDC.argtypes = [wintypes.HWND]
-                user32.GetDC.restype = wintypes.HDC
-                user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
-                user32.ReleaseDC.restype = ctypes.c_int
-
-                gdi32.GetDeviceCaps.argtypes = [wintypes.HDC, ctypes.c_int]
-                gdi32.GetDeviceCaps.restype = ctypes.c_int
-
-                # Determine coordinate system sizes for each capture backend:
-                # - GDI uses the DC logical resolution (HORZRES/VERTRES) unless DPI awareness is enabled.
-                # - Pillow ImageGrab uses physical pixels.
-                HORZRES = 8
-                VERTRES = 10
-                DESKTOPHORZRES = 118
-                DESKTOPVERTRES = 117
-
-                hdc_screen = user32.GetDC(None)
-                if not hdc_screen:
-                    raise OSError("GetDC failed")
-                try:
-                    gdi_w = int(gdi32.GetDeviceCaps(hdc_screen, HORZRES) or 0)
-                    gdi_h = int(gdi32.GetDeviceCaps(hdc_screen, VERTRES) or 0)
-                    phys_w = int(gdi32.GetDeviceCaps(hdc_screen, DESKTOPHORZRES) or 0)
-                    phys_h = int(gdi32.GetDeviceCaps(hdc_screen, DESKTOPVERTRES) or 0)
-                finally:
-                    try:
-                        user32.ReleaseDC(None, hdc_screen)
-                    except Exception:
-                        pass
-
-                if gdi_w <= 0 or gdi_h <= 0:
-                    gdi_w, gdi_h = tk_w, tk_h
-
-                grab_w, grab_h = phys_w, phys_h
-                if grab_w <= 0 or grab_h <= 0:
-                    # Last resort: attempt a full screenshot (can fail on some systems).
-                    try:
-                        grab_w, grab_h = ImageGrab.grab().size
-                    except Exception:
-                        grab_w, grab_h = gdi_w, gdi_h
 
                 def _expand_and_clamp_bbox(
                     left: int, top: int, right: int, bottom: int, limit_w: int, limit_h: int, pad_px: int
@@ -819,166 +823,237 @@ class QRRegionSelector(tk.Toplevel):
                     b = max(t + 1, min(b, limit_h))
                     return int(l), int(t), int(r), int(b)
 
-                # Convert Tk logical coords to backend coords, then add generous padding.
-                scale_gdi_x = gdi_w / tk_w
-                scale_gdi_y = gdi_h / tk_h
-                scale_grab_x = grab_w / tk_w
-                scale_grab_y = grab_h / tk_h
+                if os.name != "nt":
+                    # macOS/Linux path: use Pillow directly.
+                    grab_w, grab_h = ImageGrab.grab().size
+                    gdi_w, gdi_h = grab_w, grab_h
+                    scale_gdi_x = gdi_w / tk_w
+                    scale_gdi_y = gdi_h / tk_h
+                    scale_grab_x = scale_gdi_x
+                    scale_grab_y = scale_gdi_y
 
-                sel_w_gdi = max(1, int((x2 - x1) * scale_gdi_x))
-                sel_h_gdi = max(1, int((y2 - y1) * scale_gdi_y))
-                pad_gdi = max(48, int(min(sel_w_gdi, sel_h_gdi) * 0.35))
+                    sel_w = max(1, int((x2 - x1) * scale_grab_x))
+                    sel_h = max(1, int((y2 - y1) * scale_grab_y))
+                    pad = max(48, int(min(sel_w, sel_h) * 0.35))
 
-                gdi_l = int(x1 * scale_gdi_x)
-                gdi_t = int(y1 * scale_gdi_y)
-                gdi_r = int(x2 * scale_gdi_x)
-                gdi_b = int(y2 * scale_gdi_y)
-                gx1, gy1, gx2, gy2 = _expand_and_clamp_bbox(gdi_l, gdi_t, gdi_r, gdi_b, gdi_w, gdi_h, pad_gdi)
+                    grab_l = int(x1 * scale_grab_x)
+                    grab_t = int(y1 * scale_grab_y)
+                    grab_r = int(x2 * scale_grab_x)
+                    grab_b = int(y2 * scale_grab_y)
+                    bx1, by1, bx2, by2 = _expand_and_clamp_bbox(grab_l, grab_t, grab_r, grab_b, grab_w, grab_h, pad)
 
-                sel_w_grab = max(1, int((x2 - x1) * scale_grab_x))
-                sel_h_grab = max(1, int((y2 - y1) * scale_grab_y))
-                pad_grab = max(48, int(min(sel_w_grab, sel_h_grab) * 0.35))
-
-                grab_l = int(x1 * scale_grab_x)
-                grab_t = int(y1 * scale_grab_y)
-                grab_r = int(x2 * scale_grab_x)
-                grab_b = int(y2 * scale_grab_y)
-                bx1, by1, bx2, by2 = _expand_and_clamp_bbox(grab_l, grab_t, grab_r, grab_b, grab_w, grab_h, pad_grab)
-
-                def _gdi_grab(x: int, y: int, w: int, h: int) -> Image.Image:
-                    """Win32 GDI capture of a screen region. Avoids Pillow's intermittent 'bad window path'."""
-                    SRCCOPY = 0x00CC0020
-                    DIB_RGB_COLORS = 0
-
-                    class BITMAPINFOHEADER(ctypes.Structure):
-                        _fields_ = [
-                            ("biSize", wintypes.DWORD),
-                            ("biWidth", wintypes.LONG),
-                            ("biHeight", wintypes.LONG),
-                            ("biPlanes", wintypes.WORD),
-                            ("biBitCount", wintypes.WORD),
-                            ("biCompression", wintypes.DWORD),
-                            ("biSizeImage", wintypes.DWORD),
-                            ("biXPelsPerMeter", wintypes.LONG),
-                            ("biYPelsPerMeter", wintypes.LONG),
-                            ("biClrUsed", wintypes.DWORD),
-                            ("biClrImportant", wintypes.DWORD),
-                        ]
-
-                    class BITMAPINFO(ctypes.Structure):
-                        _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
+                    gx1, gy1, gx2, gy2 = bx1, by1, bx2, by2
+                    image = ImageGrab.grab(bbox=(bx1, by1, bx2, by2))
+                    method = "imagegrab"
+                else:
+                    import ctypes
+                    from ctypes import wintypes
 
                     user32 = ctypes.WinDLL("user32", use_last_error=True)
                     gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 
+                    # Fix ctypes prototypes (avoid 64-bit overflow / "bad window path"-like failures).
                     user32.GetDC.argtypes = [wintypes.HWND]
                     user32.GetDC.restype = wintypes.HDC
                     user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
                     user32.ReleaseDC.restype = ctypes.c_int
 
-                    gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
-                    gdi32.CreateCompatibleDC.restype = wintypes.HDC
-                    gdi32.DeleteDC.argtypes = [wintypes.HDC]
-                    gdi32.DeleteDC.restype = ctypes.c_int
+                    gdi32.GetDeviceCaps.argtypes = [wintypes.HDC, ctypes.c_int]
+                    gdi32.GetDeviceCaps.restype = ctypes.c_int
 
-                    gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
-                    gdi32.CreateCompatibleBitmap.restype = wintypes.HANDLE
+                    # Determine coordinate system sizes for each capture backend:
+                    # - GDI uses the DC logical resolution (HORZRES/VERTRES) unless DPI awareness is enabled.
+                    # - Pillow ImageGrab uses physical pixels.
+                    HORZRES = 8
+                    VERTRES = 10
+                    DESKTOPHORZRES = 118
+                    DESKTOPVERTRES = 117
 
-                    gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HANDLE]
-                    gdi32.SelectObject.restype = wintypes.HANDLE
-                    gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
-                    gdi32.DeleteObject.restype = ctypes.c_int
-
-                    gdi32.BitBlt.argtypes = [
-                        wintypes.HDC,
-                        ctypes.c_int,
-                        ctypes.c_int,
-                        ctypes.c_int,
-                        ctypes.c_int,
-                        wintypes.HDC,
-                        ctypes.c_int,
-                        ctypes.c_int,
-                        wintypes.DWORD,
-                    ]
-                    gdi32.BitBlt.restype = wintypes.BOOL
-
-                    gdi32.GetDIBits.argtypes = [
-                        wintypes.HDC,
-                        wintypes.HANDLE,
-                        wintypes.UINT,
-                        wintypes.UINT,
-                        ctypes.c_void_p,
-                        ctypes.c_void_p,
-                        wintypes.UINT,
-                    ]
-                    gdi32.GetDIBits.restype = ctypes.c_int
-
-                    hdc = user32.GetDC(None)
-                    if not hdc:
+                    hdc_screen = user32.GetDC(None)
+                    if not hdc_screen:
                         raise OSError("GetDC failed")
-                    mdc = gdi32.CreateCompatibleDC(hdc)
-                    if not mdc:
-                        user32.ReleaseDC(None, hdc)
-                        raise OSError("CreateCompatibleDC failed")
-                    bmp = gdi32.CreateCompatibleBitmap(hdc, w, h)
-                    if not bmp:
-                        gdi32.DeleteDC(mdc)
-                        user32.ReleaseDC(None, hdc)
-                        raise OSError("CreateCompatibleBitmap failed")
-
-                    old = gdi32.SelectObject(mdc, bmp)
                     try:
-                        if not gdi32.BitBlt(mdc, 0, 0, w, h, hdc, x, y, SRCCOPY):
-                            raise OSError("BitBlt failed")
-
-                        bmi = BITMAPINFO()
-                        bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-                        bmi.bmiHeader.biWidth = w
-                        bmi.bmiHeader.biHeight = -h  # top-down
-                        bmi.bmiHeader.biPlanes = 1
-                        bmi.bmiHeader.biBitCount = 32
-                        bmi.bmiHeader.biCompression = 0  # BI_RGB
-                        buf = ctypes.create_string_buffer(w * h * 4)
-
-                        lines = gdi32.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bmi), DIB_RGB_COLORS)
-                        if lines != h:
-                            raise OSError("GetDIBits failed")
-
-                        return Image.frombuffer("RGB", (w, h), buf, "raw", "BGRX", 0, 1)
+                        gdi_w = int(gdi32.GetDeviceCaps(hdc_screen, HORZRES) or 0)
+                        gdi_h = int(gdi32.GetDeviceCaps(hdc_screen, VERTRES) or 0)
+                        phys_w = int(gdi32.GetDeviceCaps(hdc_screen, DESKTOPHORZRES) or 0)
+                        phys_h = int(gdi32.GetDeviceCaps(hdc_screen, DESKTOPVERTRES) or 0)
                     finally:
                         try:
-                            gdi32.SelectObject(mdc, old)
+                            user32.ReleaseDC(None, hdc_screen)
                         except Exception:
                             pass
-                        gdi32.DeleteObject(bmp)
-                        gdi32.DeleteDC(mdc)
+
+                    if gdi_w <= 0 or gdi_h <= 0:
+                        gdi_w, gdi_h = tk_w, tk_h
+
+                    grab_w, grab_h = phys_w, phys_h
+                    if grab_w <= 0 or grab_h <= 0:
+                        # Last resort: attempt a full screenshot (can fail on some systems).
                         try:
-                            user32.ReleaseDC(None, hdc)
+                            grab_w, grab_h = ImageGrab.grab().size
                         except Exception:
-                            pass
+                            grab_w, grab_h = gdi_w, gdi_h
 
-                gw = max(1, gx2 - gx1)
-                gh = max(1, gy2 - gy1)
+                    # Convert Tk logical coords to backend coords, then add generous padding.
+                    scale_gdi_x = gdi_w / tk_w
+                    scale_gdi_y = gdi_h / tk_h
+                    scale_grab_x = grab_w / tk_w
+                    scale_grab_y = grab_h / tk_h
 
-                # Prefer GDI capture; fall back to Pillow if needed.
-                image = None
-                last_err: Exception | None = None
-                method = None
-                try:
-                    image = _gdi_grab(gx1, gy1, gw, gh)
-                    method = "gdi"
-                except Exception as e:
-                    last_err = e
+                    sel_w_gdi = max(1, int((x2 - x1) * scale_gdi_x))
+                    sel_h_gdi = max(1, int((y2 - y1) * scale_gdi_y))
+                    pad_gdi = max(48, int(min(sel_w_gdi, sel_h_gdi) * 0.35))
+
+                    gdi_l = int(x1 * scale_gdi_x)
+                    gdi_t = int(y1 * scale_gdi_y)
+                    gdi_r = int(x2 * scale_gdi_x)
+                    gdi_b = int(y2 * scale_gdi_y)
+                    gx1, gy1, gx2, gy2 = _expand_and_clamp_bbox(gdi_l, gdi_t, gdi_r, gdi_b, gdi_w, gdi_h, pad_gdi)
+
+                    sel_w_grab = max(1, int((x2 - x1) * scale_grab_x))
+                    sel_h_grab = max(1, int((y2 - y1) * scale_grab_y))
+                    pad_grab = max(48, int(min(sel_w_grab, sel_h_grab) * 0.35))
+
+                    grab_l = int(x1 * scale_grab_x)
+                    grab_t = int(y1 * scale_grab_y)
+                    grab_r = int(x2 * scale_grab_x)
+                    grab_b = int(y2 * scale_grab_y)
+                    bx1, by1, bx2, by2 = _expand_and_clamp_bbox(grab_l, grab_t, grab_r, grab_b, grab_w, grab_h, pad_grab)
+
+                    def _gdi_grab(x: int, y: int, w: int, h: int) -> Image.Image:
+                        """Win32 GDI capture of a screen region. Avoids Pillow's intermittent 'bad window path'."""
+                        SRCCOPY = 0x00CC0020
+                        DIB_RGB_COLORS = 0
+
+                        class BITMAPINFOHEADER(ctypes.Structure):
+                            _fields_ = [
+                                ("biSize", wintypes.DWORD),
+                                ("biWidth", wintypes.LONG),
+                                ("biHeight", wintypes.LONG),
+                                ("biPlanes", wintypes.WORD),
+                                ("biBitCount", wintypes.WORD),
+                                ("biCompression", wintypes.DWORD),
+                                ("biSizeImage", wintypes.DWORD),
+                                ("biXPelsPerMeter", wintypes.LONG),
+                                ("biYPelsPerMeter", wintypes.LONG),
+                                ("biClrUsed", wintypes.DWORD),
+                                ("biClrImportant", wintypes.DWORD),
+                            ]
+
+                        class BITMAPINFO(ctypes.Structure):
+                            _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
+
+                        user32 = ctypes.WinDLL("user32", use_last_error=True)
+                        gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+
+                        user32.GetDC.argtypes = [wintypes.HWND]
+                        user32.GetDC.restype = wintypes.HDC
+                        user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+                        user32.ReleaseDC.restype = ctypes.c_int
+
+                        gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+                        gdi32.CreateCompatibleDC.restype = wintypes.HDC
+                        gdi32.DeleteDC.argtypes = [wintypes.HDC]
+                        gdi32.DeleteDC.restype = ctypes.c_int
+
+                        gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+                        gdi32.CreateCompatibleBitmap.restype = wintypes.HANDLE
+
+                        gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HANDLE]
+                        gdi32.SelectObject.restype = wintypes.HANDLE
+                        gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+                        gdi32.DeleteObject.restype = ctypes.c_int
+
+                        gdi32.BitBlt.argtypes = [
+                            wintypes.HDC,
+                            ctypes.c_int,
+                            ctypes.c_int,
+                            ctypes.c_int,
+                            ctypes.c_int,
+                            wintypes.HDC,
+                            ctypes.c_int,
+                            ctypes.c_int,
+                            wintypes.DWORD,
+                        ]
+                        gdi32.BitBlt.restype = wintypes.BOOL
+
+                        gdi32.GetDIBits.argtypes = [
+                            wintypes.HDC,
+                            wintypes.HANDLE,
+                            wintypes.UINT,
+                            wintypes.UINT,
+                            ctypes.c_void_p,
+                            ctypes.c_void_p,
+                            wintypes.UINT,
+                        ]
+                        gdi32.GetDIBits.restype = ctypes.c_int
+
+                        hdc = user32.GetDC(None)
+                        if not hdc:
+                            raise OSError("GetDC failed")
+                        mdc = gdi32.CreateCompatibleDC(hdc)
+                        if not mdc:
+                            user32.ReleaseDC(None, hdc)
+                            raise OSError("CreateCompatibleDC failed")
+                        bmp = gdi32.CreateCompatibleBitmap(hdc, w, h)
+                        if not bmp:
+                            gdi32.DeleteDC(mdc)
+                            user32.ReleaseDC(None, hdc)
+                            raise OSError("CreateCompatibleBitmap failed")
+
+                        old = gdi32.SelectObject(mdc, bmp)
+                        try:
+                            if not gdi32.BitBlt(mdc, 0, 0, w, h, hdc, x, y, SRCCOPY):
+                                raise OSError("BitBlt failed")
+
+                            bmi = BITMAPINFO()
+                            bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+                            bmi.bmiHeader.biWidth = w
+                            bmi.bmiHeader.biHeight = -h  # top-down
+                            bmi.bmiHeader.biPlanes = 1
+                            bmi.bmiHeader.biBitCount = 32
+                            bmi.bmiHeader.biCompression = 0  # BI_RGB
+                            buf = ctypes.create_string_buffer(w * h * 4)
+
+                            lines = gdi32.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bmi), DIB_RGB_COLORS)
+                            if lines != h:
+                                raise OSError("GetDIBits failed")
+
+                            return Image.frombuffer("RGB", (w, h), buf, "raw", "BGRX", 0, 1)
+                        finally:
+                            try:
+                                gdi32.SelectObject(mdc, old)
+                            except Exception:
+                                pass
+                            gdi32.DeleteObject(bmp)
+                            gdi32.DeleteDC(mdc)
+                            try:
+                                user32.ReleaseDC(None, hdc)
+                            except Exception:
+                                pass
+
+                    gw = max(1, gx2 - gx1)
+                    gh = max(1, gy2 - gy1)
+
+                    # Prefer GDI capture; fall back to Pillow if needed.
+                    image = None
+                    last_err: Exception | None = None
+                    method = None
                     try:
-                        image = ImageGrab.grab(bbox=(bx1, by1, bx2, by2))
-                        method = "imagegrab"
-                    except Exception as e2:
-                        last_err = e2
-                        raise last_err
+                        image = _gdi_grab(gx1, gy1, gw, gh)
+                        method = "gdi"
+                    except Exception as e:
+                        last_err = e
+                        try:
+                            image = ImageGrab.grab(bbox=(bx1, by1, bx2, by2))
+                            method = "imagegrab"
+                        except Exception as e2:
+                            last_err = e2
+                            raise last_err
 
                 # Save capture metadata for debugging.
                 try:
-                    SESSION_DIR.mkdir(exist_ok=True)
+                    ensure_private_dir(SESSION_DIR)
                     meta_path = SESSION_DIR / f"qr_capture_account_{self.account_num}.meta.json"
                     meta_path.write_text(
                         __import__("json").dumps(
@@ -997,6 +1072,7 @@ class QRRegionSelector(tk.Toplevel):
                         ),
                         encoding="utf-8",
                     )
+                    restrict_file(meta_path)
                 except Exception:
                     pass
 
@@ -1006,12 +1082,13 @@ class QRRegionSelector(tk.Toplevel):
                 # Persist debug info for capture issues (common on Windows).
                 try:
                     import traceback
-                    SESSION_DIR.mkdir(exist_ok=True)
+                    ensure_private_dir(SESSION_DIR)
                     log_path = SESSION_DIR / f"qr_capture_account_{self.account_num}.error.log"
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"\n=== capture attempt {attempt} ===\n")
                         f.write(f"{type(e).__name__}: {e}\n")
                         f.write(traceback.format_exc())
+                    restrict_file(log_path)
                 except Exception:
                     pass
 
@@ -3582,9 +3659,9 @@ class VolumeBoostGUI:
     def _update_monitor_btn(self, unhedged: bool) -> None:
         """Update Monitor button styling based on hedge status."""
         if unhedged:
-            self._monitor_btn.configure(text=_("btn.monitor_warn"), bg="#FFD700", fg="black")
+            self._monitor_btn.configure(text=_("btn.monitor_warn"))
         else:
-            self._monitor_btn.configure(text=_("btn.monitor"), bg="SystemButtonFace", fg="black")
+            self._monitor_btn.configure(text=_("btn.monitor"))
 
     def reload_accounts(self) -> None:
         """Reload accounts from session files (called after QR login)."""
@@ -3658,11 +3735,11 @@ class VolumeBoostGUI:
         self._lang_btn.pack(side=tk.LEFT, padx=(8, 0))
          
         # Monitor button with dynamic styling for unhedged position warning
-        self._monitor_btn = tk.Button(row2, text=_("btn.monitor"), command=self._open_monitor)
+        self._monitor_btn = ttk.Button(row2, text=_("btn.monitor"), command=self._open_monitor)
         self._monitor_btn.pack(side=tk.LEFT)
          
         # Setup button with dynamic styling based on account status
-        self._setup_btn = tk.Button(row2, text=_("btn.setup_account"), command=self._open_setup)
+        self._setup_btn = ttk.Button(row2, text=_("btn.setup_account"), command=self._open_setup)
         self._setup_btn.pack(side=tk.LEFT, padx=8)
         
         # Account status indicator
@@ -3673,10 +3750,10 @@ class VolumeBoostGUI:
         # Right-side controls.
         right = ttk.Frame(row2)
         right.pack(side=tk.RIGHT)
-        self._about_btn = tk.Button(right, text=_("btn.about"), command=self._open_about)
+        self._about_btn = ttk.Button(right, text=_("btn.about"), command=self._open_about)
         self._about_btn.pack(side=tk.LEFT, padx=4)
         # Stop All button (stops all running tabs)
-        self._stop_all_btn = tk.Button(right, text=_("btn.stop_all"), command=self._stop_all, bg="#FF6B6B", fg="white")
+        self._stop_all_btn = ttk.Button(right, text=_("btn.stop_all"), command=self._stop_all)
         self._stop_all_btn.pack(side=tk.LEFT, padx=4)
 
         self.notebook = ttk.Notebook(self.root)
@@ -3750,11 +3827,11 @@ class VolumeBoostGUI:
         if self.account_pair:
             # Both accounts loaded - green
             self._status_label.configure(fg="green")
-            self._setup_btn.configure(bg="SystemButtonFace", fg="black")
+            self._setup_btn.configure(text=_("btn.setup_account"))
         else:
             # Accounts not configured - yellow warning
             self._status_label.configure(fg="orange")
-            self._setup_btn.configure(bg="#FFD700", fg="black")
+            self._setup_btn.configure(text=f"{_('btn.setup_account')} ⚠")
 
     def _stop_all(self) -> None:
         """Stop all running market panels."""
