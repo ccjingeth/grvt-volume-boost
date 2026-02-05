@@ -2,8 +2,6 @@
 
 本项目提供 GUI 和命令行（CLI）两种方式，使用两个 GRVT 账号在永续合约市场进行对冲交易（对敲）以产生交易量。登录方式为扫码（QR）登录并保存本地会话（不需要 API Key）。
 
-Youtube教学视频: <https://www.youtube.com/watch?v=FfrjZStzyAo>
-
 English README: `README_en.md`.
 
 ## 风险提示
@@ -153,4 +151,4 @@ GUI 顶部可以切换：
 - 作者：ccjing
 - 推特：<https://x.com/ccjing_eth>
 - GRVT 高返佣注册链接：<https://grvt.io/?ref=ccjing>  , 全网最高的 35%返佣 + 1.3倍积分加成
-- Telegram 交流群: <https://t.me/+Oe-Ul8Pzyck4ZGQ1>  (返佣在群里领,每个月底发放)
+- Telegram 交流群: <https://t.me/+VAhPSvs7jrxjYTY1>  (返佣在群里领,每个月底发放)
