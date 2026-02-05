@@ -113,3 +113,10 @@ Copy `.env.example` to `.env` (optional). Most users can run with defaults.
 
 - Cookies are refreshed automatically from the stored browser state.
 - Orders are signed with an EIP-712 session key stored in `localStorage['grvt_ss_on_chain']` after successful login.
+
+## Developer
+
+- Author: ccjing
+- Twitter: <https://x.com/ccjing_eth>
+- GRVT referral: <https://grvt.io/?ref=ccjing> (35% fee rebate + 1.3x points)
+- Telegram group: <https://t.me/+VAhPSvs7jrxjYTY1>
