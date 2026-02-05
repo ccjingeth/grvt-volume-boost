@@ -545,6 +545,15 @@ def qr_login_from_url(
                     return None, "QR code expired or invalid. Generate a new one."
 
                 if require_session_key:
+                    # After QR login, navigate to the main site so localStorage is scoped to ORIGIN.
+                    # Session keys are stored per-origin; staying on /qr-login may never populate them.
+                    try:
+                        page.goto(f"{origin}/exchange/perpetual/BTC-USDT", wait_until="domcontentloaded", timeout=60000)
+                    except Exception:
+                        try:
+                            page.goto(origin, wait_until="domcontentloaded", timeout=60000)
+                        except Exception:
+                            pass
                     sk, verification_seen = _wait_for_session_key(
                         page, timeout_sec=session_key_timeout_sec, get_email_code=get_email_code, on_event=on_event
                     )
