@@ -219,6 +219,38 @@ def _wait_for_session_key(
     return None, verification_seen
 
 
+def _wait_for_session_key_with_retry(
+    page,
+    *,
+    timeout_sec: float,
+    retries: int,
+    origin: str,
+    get_email_code: Callable[[], str | None] | None,
+    on_event: Callable[[str], None] | None,
+) -> tuple[str | None, bool]:
+    """Wait for grvt_ss_on_chain with reload retry. Returns (value, verification_seen_any)."""
+    retries = max(0, int(retries))
+    verification_seen_any = False
+    for attempt in range(retries + 1):
+        sk, verification_seen = _wait_for_session_key(
+            page, timeout_sec=timeout_sec, get_email_code=get_email_code, on_event=on_event
+        )
+        verification_seen_any = verification_seen_any or verification_seen
+        if sk:
+            return sk, verification_seen_any
+        if attempt >= retries:
+            break
+        _notify(on_event, f"Session key not ready yet. Retrying ({attempt + 1}/{retries})...")
+        try:
+            page.goto(f"{origin}/exchange/perpetual/BTC-USDT", wait_until="domcontentloaded", timeout=60000)
+        except Exception:
+            try:
+                page.goto(origin, wait_until="domcontentloaded", timeout=60000)
+            except Exception:
+                pass
+    return None, verification_seen_any
+
+
 def _manual_verification_headed(
     *,
     state_path: Path,
@@ -464,6 +496,7 @@ def qr_login_from_url(
     timeout_sec: float = 60.0,
     require_session_key: bool = True,
     session_key_timeout_sec: float = 180.0,
+    session_key_retries: int = 1,
     headless: bool = False,
     channel: str | None = None,
     get_email_code: Callable[[], str | None] | None = None,
@@ -474,7 +507,7 @@ def qr_login_from_url(
 
     Note: Orders require `localStorage['grvt_ss_on_chain']` which is only set after completing
     the email verification step. When `require_session_key` is True, this will wait until that
-    key exists before saving storage state.
+    key exists before saving storage state (with optional reload retries).
     """
     def _run() -> tuple[str | None, str]:
         from playwright.sync_api import sync_playwright
@@ -522,6 +555,7 @@ def qr_login_from_url(
                             timeout_sec=timeout_sec,
                             require_session_key=require_session_key,
                             session_key_timeout_sec=session_key_timeout_sec,
+                            session_key_retries=session_key_retries,
                             headless=False,
                             channel=channel,
                             get_email_code=get_email_code,
@@ -554,8 +588,13 @@ def qr_login_from_url(
                             page.goto(origin, wait_until="domcontentloaded", timeout=60000)
                         except Exception:
                             pass
-                    sk, verification_seen = _wait_for_session_key(
-                        page, timeout_sec=session_key_timeout_sec, get_email_code=get_email_code, on_event=on_event
+                    sk, verification_seen = _wait_for_session_key_with_retry(
+                        page,
+                        timeout_sec=session_key_timeout_sec,
+                        retries=session_key_retries,
+                        origin=origin,
+                        get_email_code=get_email_code,
+                        on_event=on_event,
                     )
                     if not sk:
                         # If verification was detected but we couldn't complete it headless, fall back to headed
