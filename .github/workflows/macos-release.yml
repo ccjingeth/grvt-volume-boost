@@ -32,9 +32,10 @@ jobs:
 
       - name: Zip artifact
         run: |
+          ./scripts/package_macos_zip.sh "${{ matrix.artifact_suffix }}"
           name="GRVTVolumeBoost-${{ matrix.artifact_suffix }}"
           rm -f "${name}.zip"
-          ditto -c -k --sequesterRsrc --keepParent "dist/GRVTVolumeBoost.app" "${name}.zip"
+          mv "dist/GRVTVolumeBoost-${{ matrix.artifact_suffix }}.zip" "${name}.zip"
           ls -lh "${name}.zip"
 
       - name: Release (tag builds)

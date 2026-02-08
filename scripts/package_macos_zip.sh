@@ -6,8 +6,9 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
 APP_NAME="GRVTVolumeBoost.app"
 APP_PATH="${DIST_DIR}/${APP_NAME}"
-PKG_DIR="${DIST_DIR}/GRVTVolumeBoost-macos-arm64"
-ZIP_PATH="${DIST_DIR}/GRVTVolumeBoost-macos-arm64.zip"
+SUFFIX="${1:-macos-arm64}"
+PKG_DIR="${DIST_DIR}/GRVTVolumeBoost-${SUFFIX}"
+ZIP_PATH="${DIST_DIR}/GRVTVolumeBoost-${SUFFIX}.zip"
 
 if [[ ! -d "${APP_PATH}" ]]; then
   echo "App not found: ${APP_PATH}" >&2
