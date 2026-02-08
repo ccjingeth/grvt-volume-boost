@@ -9,6 +9,7 @@ from grvt_volume_boost.auth.session_state import (
     extract_account_id,
     extract_chain_sub_account_id,
 )
+from grvt_volume_boost.auth.api_session import maybe_prepare_api_session
 from grvt_volume_boost.settings import CHAIN_ID, MARKET_DATA_URL, ORIGIN, SESSION_DIR, TRADES_URL
 
 
@@ -28,9 +29,14 @@ def _state_file_for_account(num: int) -> Path:
 def get_account(num: int) -> AccountConfig:
     """Load account info from the saved browser state (QR login).
 
-    We do NOT use API keys/secrets; orders are signed by `grvt_ss_on_chain` session key
-    and authenticated by the `gravity` cookie.
+    By default we use QR login sessions; optionally API-key mode can seed a session file
+    (see .env for GRVT_API_* entries). Orders are signed by `grvt_ss_on_chain` (or API
+    private key override) and authenticated by the `gravity` cookie.
     """
+    used_api, api_err = maybe_prepare_api_session(num)
+    if used_api and api_err:
+        raise ValueError(api_err)
+
     state_path = _state_file_for_account(num)
     name = f"Account{num}"
 
@@ -69,6 +75,11 @@ def get_all_accounts() -> tuple[list[AccountConfig], list[str]]:
     errors: list[str] = []
 
     for num in (1, 2):
+        used_api, api_err = maybe_prepare_api_session(num)
+        if used_api and api_err:
+            errors.append(f"Account {num}: {api_err}")
+            continue
+
         state_path = _state_file_for_account(num)
 
         # Check session file

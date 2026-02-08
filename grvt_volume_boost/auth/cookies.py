@@ -161,6 +161,15 @@ def get_fresh_cookie(state_path: Path, *, origin: str = ORIGIN, force_refresh: b
             pass
 
     gravity = None
+    # API-key mode: attempt to refresh via API login (avoids Playwright dependency).
+    try:
+        from grvt_volume_boost.auth.api_session import refresh_gravity_cookie_for_state
+
+        api_cookie = refresh_gravity_cookie_for_state(state_path)
+        if api_cookie:
+            return api_cookie
+    except Exception:
+        pass
     try:
         def _run() -> str | None:
             from playwright.sync_api import sync_playwright

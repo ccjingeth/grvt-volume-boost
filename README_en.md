@@ -77,12 +77,36 @@ See `README.md`.
 - Click `Setup Account`
 - For Account 1 and 2, use `Capture QR` (or `Select Image...`) and then `Login`
 - If GRVT asks for email verification, the app will prompt you to enter the code
+- If you already have session fields, you can click `Paste Session`
 
 Sessions are saved locally under:
 - PROD: `session/`
 - TESTNET: `session_testnet/`
 
 These are ignored by git.
+
+### 3b) Configure accounts (API key, optional)
+
+If you prefer not to scan QR codes, you can use API keys via `.env` (requires **Transfer + Trade** permissions):
+
+```bash
+GRVT_API_KEY_1=...
+GRVT_API_SECRET_1=...
+GRVT_PRIVATE_KEY_1=...          # used for order signing
+GRVT_ACCOUNT_ID_1=...           # recommended
+GRVT_CHAIN_SUB_ACCOUNT_ID_1=... # recommended
+
+GRVT_API_KEY_2=...
+GRVT_API_SECRET_2=...
+GRVT_PRIVATE_KEY_2=...
+GRVT_ACCOUNT_ID_2=...
+GRVT_CHAIN_SUB_ACCOUNT_ID_2=...
+```
+
+Notes:
+- `GRVT_PRIVATE_KEY_*` is sensitive and must stay local in `.env`. Do not upload it.
+- If the API login does not return `account_id / chain_sub_account_id`, the app will ask you to fill them.
+- You can also set `GRVT_GRAVITY_*` to skip API login if needed.
 
 ## Security Notes
 

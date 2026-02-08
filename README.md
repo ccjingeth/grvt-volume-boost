@@ -92,10 +92,34 @@ GUI 顶部可以切换：
   - 或 `Select Image...`：选择本地二维码图片（PNG/JPG）
 - 点击 `Login` 开始登录
 - 如果出现邮箱验证码验证，GUI 会提示你输入验证码
+- 如果你已有会话字段，可点 `粘贴会话` 直接录入
 
 登录成功后会保存浏览器状态文件：
 - `session/grvt_browser_state_1.json`
 - `session/grvt_browser_state_2.json`
+
+### 2b) 账号设置（API Key 登录，可选）
+
+如果你不想扫码，可以通过 `.env` 提供 API Key（需要 **Transfer + Trade 权限**）：
+
+```bash
+GRVT_API_KEY_1=...
+GRVT_API_SECRET_1=...
+GRVT_PRIVATE_KEY_1=...         # 用于订单签名
+GRVT_ACCOUNT_ID_1=...          # 建议提供
+GRVT_CHAIN_SUB_ACCOUNT_ID_1=...# 建议提供
+
+GRVT_API_KEY_2=...
+GRVT_API_SECRET_2=...
+GRVT_PRIVATE_KEY_2=...
+GRVT_ACCOUNT_ID_2=...
+GRVT_CHAIN_SUB_ACCOUNT_ID_2=...
+```
+
+说明：
+- `GRVT_PRIVATE_KEY_*` 是签名用私钥，**只保存在本地 `.env`**，不要上传。
+- 如果 API 登录未返回 `account_id / chain_sub_account_id`，程序会提示你补齐。
+- 你也可以直接设置 `GRVT_GRAVITY_*` 跳过 API 登录（用于紧急绕过）。
 
 ### 3) 选择交易市场与参数
 
