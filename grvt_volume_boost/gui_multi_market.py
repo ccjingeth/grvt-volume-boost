@@ -2259,6 +2259,17 @@ class MarketRunPanel(ttk.Frame):
         self._update_min_hint()
         self.after(100, self._drain_queue)
 
+    def update_account_hint(self) -> None:
+        """Refresh account hint label after account changes."""
+        try:
+            self._account_hint_var.set(self.app.account1_display())
+        except Exception:
+            pass
+        try:
+            self._validate_inputs()
+        except Exception:
+            pass
+
     def _build_ui(self) -> None:
         header = ttk.Frame(self)
         header.pack(fill=tk.X)
@@ -2379,7 +2390,8 @@ class MarketRunPanel(ttk.Frame):
             width=18,
         )
         self.direction_combo.grid(row=2, column=1, sticky=tk.W, pady=2)
-        ttk.Label(self.params, text=self.app.account1_display()).grid(row=2, column=2, sticky=tk.W, padx=8)
+        self._account_hint_var = tk.StringVar(value=self.app.account1_display())
+        ttk.Label(self.params, textvariable=self._account_hint_var).grid(row=2, column=2, sticky=tk.W, padx=8)
 
         ttk.Label(self.params, text=_("panel.rounds")).grid(row=3, column=0, sticky=tk.W, pady=2)
         self.rounds_var = tk.StringVar(value="10")
@@ -4018,6 +4030,14 @@ class VolumeBoostGUI:
         try:
             if hasattr(self, "_status_label"):
                 self._update_account_status()
+        except Exception:
+            pass
+
+        # Update account hints on each panel so stale "Not configured" text is cleared.
+        try:
+            for panel in getattr(self, "_panels", []) or []:
+                if hasattr(panel, "update_account_hint"):
+                    panel.update_account_hint()
         except Exception:
             pass
 
