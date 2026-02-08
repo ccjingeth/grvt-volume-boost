@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import random
@@ -18,6 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 from typing import Callable
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -35,6 +37,7 @@ from grvt_volume_boost.services.orders import (
 from grvt_volume_boost.auth.cookies import (
     DEFAULT_COOKIE_REFRESH_INTERVAL_SEC,
     get_fresh_cookie,
+    save_cookie_cache,
     validate_state_file,
     validate_state_file_ext,
 )
@@ -46,7 +49,7 @@ from grvt_volume_boost.auth.session_state import (
     set_local_storage_values,
 )
 from grvt_volume_boost.secure_files import ensure_private_dir, restrict_file
-from grvt_volume_boost.settings import ORIGIN, SESSION_DIR
+from grvt_volume_boost.settings import COOKIE_CACHE_FILE, ORIGIN, SESSION_DIR
 from grvt_volume_boost.direction import (
     SIDE_POLICY_ACCOUNT1_LONG,
     SIDE_POLICY_ACCOUNT1_SHORT,
@@ -272,7 +275,7 @@ class SetupWindow(tk.Toplevel):
         super().__init__(parent)
         self.app = app
         self.title(_("setup.title"))
-        _set_scaled_geometry(self, 760, 460)
+        _set_scaled_geometry(self, 760, 500)
         # QR codes are one-time use; store the decoded URL so we don't depend on re-decoding the image later.
         self._qr_payloads: dict[int, dict] = {}  # account_num -> {"url": str, "image": PIL.Image | None}
         self._login_in_progress: set[int] = set()
@@ -370,17 +373,19 @@ class SetupWindow(tk.Toplevel):
         b_select = ttk.Button(btns, text=_("setup.select_image"), command=lambda: self._select_qr_image(account_num))
         b_login = ttk.Button(btns, text=_("setup.login"), command=lambda: self._validate_qr(account_num))
         b_remove = ttk.Button(btns, text=_("setup.remove_session"), command=lambda: self._remove_session(account_num))
+        b_paste = ttk.Button(btns, text=_("setup.paste_session"), command=lambda: self._paste_session(account_num))
 
         b_capture.grid(row=0, column=0, sticky=tk.EW, padx=2, pady=2)
         b_select.grid(row=0, column=1, sticky=tk.EW, padx=2, pady=2)
         b_login.grid(row=1, column=0, sticky=tk.EW, padx=2, pady=2)
         b_remove.grid(row=1, column=1, sticky=tk.EW, padx=2, pady=2)
+        b_paste.grid(row=2, column=0, columnspan=2, sticky=tk.EW, padx=2, pady=2)
 
         ttk.Label(frame, textvariable=status_var, wraplength=_px(self, 620), justify=tk.LEFT).grid(
-            row=2, column=0, columnspan=2, sticky=tk.W, pady=(6, 0)
+            row=3, column=0, columnspan=2, sticky=tk.W, pady=(6, 0)
         )
 
-        self._account_buttons[account_num] = [b_capture, b_select, b_login, b_remove]
+        self._account_buttons[account_num] = [b_capture, b_select, b_login, b_remove, b_paste]
 
     def _set_account_buttons_enabled(self, account_num: int, enabled: bool) -> None:
         for w in self._account_buttons.get(account_num, []):
@@ -636,6 +641,193 @@ class SetupWindow(tk.Toplevel):
             messagebox.showerror("Error", _("setup.remove_failed", err=str(e)))
 
         self._check_sessions()
+
+    def _ask_multiline(self, title: str, body: str, *, initial: str = "") -> str | None:
+        """Prompt for multi-line text input."""
+        dialog = tk.Toplevel(self)
+        dialog.title(title)
+        dialog.transient(self)
+        dialog.grab_set()
+        _set_scaled_geometry(dialog, 620, 320)
+
+        outer = ttk.Frame(dialog, padding=12)
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(outer, text=body, wraplength=_px(self, 560), justify=tk.LEFT).pack(fill=tk.X, pady=(0, 8))
+        text = tk.Text(outer, height=8, wrap=tk.WORD)
+        text.pack(fill=tk.BOTH, expand=True)
+        if initial:
+            text.insert("1.0", initial)
+
+        btns = ttk.Frame(outer)
+        btns.pack(fill=tk.X, pady=(8, 0))
+
+        result: dict[str, str | None] = {"value": None}
+
+        def on_ok() -> None:
+            result["value"] = text.get("1.0", "end").strip()
+            dialog.destroy()
+
+        def on_cancel() -> None:
+            dialog.destroy()
+
+        ttk.Button(btns, text=_("common.ok"), command=on_ok).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(btns, text=_("common.cancel"), command=on_cancel).pack(side=tk.RIGHT)
+
+        dialog.wait_window()
+        return result["value"]
+
+    def _gravity_cookie(self, gravity: str) -> dict:
+        host = urlparse(ORIGIN).hostname or "grvt.io"
+        domain = host if host.startswith(".") else f".{host}"
+        return {
+            "name": "gravity",
+            "value": gravity,
+            "domain": domain,
+            "path": "/",
+            "expires": -1,
+            "httpOnly": True,
+            "secure": True,
+            "sameSite": "Lax",
+        }
+
+    def _parse_manual_session_text(self, raw: str) -> tuple[dict, str | None]:
+        data = raw.strip()
+        if not data:
+            raise ValueError(_("setup.paste_empty"))
+
+        def _as_str(v: object) -> str:
+            if isinstance(v, str):
+                return v
+            try:
+                return json.dumps(v, ensure_ascii=False)
+            except Exception:
+                return str(v)
+
+        def _build_state(local_map: dict, gravity: str | None) -> tuple[dict, str | None]:
+            items = []
+            for k, v in local_map.items():
+                if v is None:
+                    continue
+                items.append({"name": str(k), "value": _as_str(v)})
+            state = {"cookies": [], "origins": [{"origin": ORIGIN, "localStorage": items}]}
+            if gravity:
+                state["cookies"].append(self._gravity_cookie(gravity))
+            return state, gravity
+
+        if data.startswith("{"):
+            try:
+                obj = json.loads(data)
+            except Exception as e:
+                raise ValueError(str(e))
+            if isinstance(obj, dict) and "origins" in obj and "cookies" in obj:
+                gravity = None
+                try:
+                    for c in obj.get("cookies", []) or []:
+                        if c.get("name") == "gravity" and c.get("value"):
+                            gravity = str(c.get("value"))
+                            break
+                except Exception:
+                    gravity = None
+                return obj, gravity
+            if isinstance(obj, dict):
+                local_map = {}
+                gravity = None
+                for k, v in obj.items():
+                    lk = str(k).strip().lower()
+                    if lk in ("gravity", "cookie", "grvt_cookie", "grvt_gravity"):
+                        gravity = _as_str(v)
+                        continue
+                    local_map[str(k)] = v
+                return _build_state(local_map, gravity)
+            raise ValueError("Unsupported JSON format")
+
+        # Parse as key=value or raw session key.
+        local_map: dict[str, str] = {}
+        gravity: str | None = None
+        key_map = {
+            "grvt_ss_on_chain": "grvt_ss_on_chain",
+            "session_key": "grvt_ss_on_chain",
+            "account_id": "grvt:account_id",
+            "grvt:account_id": "grvt:account_id",
+            "chain_sub_account_id": "grvt:chain_sub_account_id",
+            "grvt:chain_sub_account_id": "grvt:chain_sub_account_id",
+            "sub_account_id": "grvt:sub_account_id",
+            "grvt:sub_account_id": "grvt:sub_account_id",
+            "client_id": "grvt:client_id",
+            "grvt:client_id": "grvt:client_id",
+        }
+
+        lines = [ln.strip() for ln in data.splitlines() if ln.strip()]
+        if len(lines) == 1 and "=" not in lines[0] and ":" not in lines[0]:
+            local_map["grvt_ss_on_chain"] = lines[0].strip()
+        else:
+            for line in lines:
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                elif ":" in line:
+                    k, v = line.split(":", 1)
+                else:
+                    continue
+                k = k.strip().strip("\"'").lower()
+                v = v.strip().strip("\"'")
+                if k in ("gravity", "cookie", "grvt_cookie", "grvt_gravity"):
+                    gravity = v
+                    continue
+                mapped = key_map.get(k)
+                if mapped:
+                    local_map[mapped] = v
+                else:
+                    local_map[k] = v
+
+        if not local_map.get("grvt_ss_on_chain"):
+            raise ValueError("grvt_ss_on_chain missing")
+
+        return _build_state(local_map, gravity)
+
+    def _paste_session(self, account_num: int) -> None:
+        status_var = self.acc1_qr_status if account_num == 1 else self.acc2_qr_status
+
+        raw = self._ask_multiline(_("setup.paste_title"), _("setup.paste_body"))
+        if raw is None:
+            return
+        if not raw.strip():
+            status_var.set(_("setup.paste_empty"))
+            return
+
+        try:
+            state, gravity = self._parse_manual_session_text(raw)
+        except Exception as e:
+            messagebox.showerror(_("setup.paste_title"), _("setup.paste_invalid", err=str(e)))
+            status_var.set(_("setup.paste_invalid", err=str(e))[:80])
+            return
+
+        state_path = SESSION_DIR / f"grvt_browser_state_{account_num}.json"
+        try:
+            ensure_private_dir(SESSION_DIR)
+            with open(state_path, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+            restrict_file(state_path)
+        except Exception as e:
+            messagebox.showerror(_("setup.paste_title"), f"{e}")
+            return
+
+        if gravity:
+            try:
+                save_cookie_cache(gravity)
+                restrict_file(COOKIE_CACHE_FILE)
+            except Exception:
+                pass
+
+        status_var.set(_("setup.paste_saved", n=account_num))
+        if not gravity:
+            messagebox.showwarning(_("setup.paste_warn_title"), _("setup.paste_missing_cookie"))
+
+        self._check_sessions()
+        try:
+            self.app.reload_accounts()
+        except Exception:
+            pass
 
     def _check_sessions(self) -> None:
         for num, status_var in [(1, self.acc1_session_status), (2, self.acc2_session_status)]:
