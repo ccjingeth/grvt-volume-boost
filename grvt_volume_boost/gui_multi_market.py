@@ -6,6 +6,7 @@ import json
 import os
 import queue
 import random
+import shutil
 import subprocess
 import sys
 import threading
@@ -49,7 +50,7 @@ from grvt_volume_boost.auth.session_state import (
     set_local_storage_values,
 )
 from grvt_volume_boost.secure_files import ensure_private_dir, restrict_file
-from grvt_volume_boost.settings import COOKIE_CACHE_FILE, ORIGIN, SESSION_DIR
+from grvt_volume_boost.settings import COOKIE_CACHE_FILE, DATA_ROOT, ORIGIN, REPO_ROOT, SESSION_DIR
 from grvt_volume_boost.direction import (
     SIDE_POLICY_ACCOUNT1_LONG,
     SIDE_POLICY_ACCOUNT1_SHORT,
@@ -64,6 +65,10 @@ from grvt_volume_boost.ws_monitor import PositionWSManager
 from grvt_volume_boost.ws import OrderStreamClient
 
 load_dotenv(".env")
+try:
+    load_dotenv(DATA_ROOT / ".env")
+except Exception:
+    pass
 
 EXCLUDED_BASES: set[str] = set()  # No exclusions - include all markets
 
@@ -283,20 +288,79 @@ class SetupWindow(tk.Toplevel):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        outer = ttk.Frame(self, padding=10)
+        outer = ttk.Frame(self)
         outer.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        vscroll = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=vscroll.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        content = ttk.Frame(canvas, padding=10)
+        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def _on_content_configure(_event: tk.Event) -> None:
+            try:
+                canvas.configure(scrollregion=canvas.bbox("all"))
+            except Exception:
+                pass
+
+        def _on_canvas_configure(event: tk.Event) -> None:
+            try:
+                canvas.itemconfigure(window_id, width=event.width)
+            except Exception:
+                pass
+
+        content.bind("<Configure>", _on_content_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        # Mouse wheel scrolling
+        def _on_mousewheel(event: tk.Event) -> None:
+            delta = 0
+            if hasattr(event, "delta") and event.delta:
+                delta = -1 if event.delta > 0 else 1
+            elif getattr(event, "num", None) == 4:
+                delta = -1
+            elif getattr(event, "num", None) == 5:
+                delta = 1
+            if delta:
+                canvas.yview_scroll(delta, "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        canvas.bind_all("<Button-4>", _on_mousewheel)
+        canvas.bind_all("<Button-5>", _on_mousewheel)
+
+        self._build_env_block(content)
 
         # Account 1 / Account 2 blocks
         self.acc1_session_status = tk.StringVar(value=_("setup.not_checked"))
         self.acc1_qr_status = tk.StringVar(value="")
-        self._build_account_block(outer, 1, self.acc1_session_status, self.acc1_qr_status)
+        self._build_account_block(content, 1, self.acc1_session_status, self.acc1_qr_status)
 
         self.acc2_session_status = tk.StringVar(value=_("setup.not_checked"))
         self.acc2_qr_status = tk.StringVar(value="")
-        self._build_account_block(outer, 2, self.acc2_session_status, self.acc2_qr_status)
+        self._build_account_block(content, 2, self.acc2_session_status, self.acc2_qr_status)
 
-        ttk.Button(outer, text=_("setup.close"), command=self.destroy).pack(anchor="e", pady=(10, 0))
+        ttk.Button(content, text=_("setup.close"), command=self.destroy).pack(anchor="e", pady=(10, 0))
         self._check_sessions()
+
+    def _build_env_block(self, parent: tk.Widget) -> None:
+        frame = ttk.LabelFrame(parent, text=_("setup.env_title"), padding=10)
+        frame.pack(fill=tk.X, padx=5, pady=(0, 6))
+
+        env_path = self._env_path()
+        ttk.Label(
+            frame,
+            text=_("setup.env_path", path=str(env_path)),
+            wraplength=_px(self, 620),
+            justify=tk.LEFT,
+        ).pack(anchor="w")
+
+        btns = ttk.Frame(frame)
+        btns.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(btns, text=_("setup.env_open"), command=self._open_env_file).pack(side=tk.LEFT)
+        ttk.Button(btns, text=_("setup.env_open_dir"), command=self._open_env_dir).pack(side=tk.LEFT, padx=6)
 
     def _maybe_select_subaccount_async(self, account_num: int) -> None:
         """If multiple subaccounts exist, prompt the user to choose one."""
@@ -642,6 +706,81 @@ class SetupWindow(tk.Toplevel):
 
         self._check_sessions()
 
+    def _env_path(self) -> Path:
+        return DATA_ROOT / ".env"
+
+    def _ensure_env_file(self) -> Path:
+        env_path = self._env_path()
+        if env_path.exists():
+            return env_path
+
+        ensure_private_dir(env_path.parent)
+        template_path = REPO_ROOT / ".env.example"
+        if template_path.exists():
+            try:
+                shutil.copy(template_path, env_path)
+            except Exception as e:
+                raise RuntimeError(str(e))
+        else:
+            # Minimal template fallback (for packaged apps).
+            template = "\n".join(
+                [
+                    "# GRVT Trading Tool (.env)",
+                    "GRVT_ENV=prod",
+                    "GRVT_LANG=zh",
+                    "",
+                    "# API-key mode (optional)",
+                    "# GRVT_API_KEY_1=",
+                    "# GRVT_API_SECRET_1=",
+                    "# GRVT_PRIVATE_KEY_1=",
+                    "# GRVT_ACCOUNT_ID_1=",
+                    "# GRVT_CHAIN_SUB_ACCOUNT_ID_1=",
+                    "",
+                    "# GRVT_API_KEY_2=",
+                    "# GRVT_API_SECRET_2=",
+                    "# GRVT_PRIVATE_KEY_2=",
+                    "# GRVT_ACCOUNT_ID_2=",
+                    "# GRVT_CHAIN_SUB_ACCOUNT_ID_2=",
+                    "",
+                ]
+            )
+            try:
+                env_path.write_text(template + "\n", encoding="utf-8")
+            except Exception as e:
+                raise RuntimeError(str(e))
+
+        try:
+            restrict_file(env_path)
+        except Exception:
+            pass
+        return env_path
+
+    def _open_path(self, path: Path) -> None:
+        try:
+            if sys.platform == "darwin":
+                subprocess.run(["open", str(path)], check=False)
+            elif os.name == "nt":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            else:
+                subprocess.run(["xdg-open", str(path)], check=False)
+        except Exception as e:
+            messagebox.showerror(_("setup.env_open_failed"), str(e))
+
+    def _open_env_file(self) -> None:
+        try:
+            env_path = self._ensure_env_file()
+        except Exception as e:
+            messagebox.showerror(_("setup.env_create_failed"), str(e))
+            return
+        self._open_path(env_path)
+
+    def _open_env_dir(self) -> None:
+        try:
+            ensure_private_dir(DATA_ROOT)
+        except Exception:
+            pass
+        self._open_path(DATA_ROOT)
+
     def _ask_multiline(self, title: str, body: str, *, initial: str = "") -> str | None:
         """Prompt for multi-line text input."""
         dialog = tk.Toplevel(self)
@@ -649,6 +788,7 @@ class SetupWindow(tk.Toplevel):
         dialog.transient(self)
         dialog.grab_set()
         _set_scaled_geometry(dialog, 620, 320)
+        dialog.resizable(True, True)
 
         outer = ttk.Frame(dialog, padding=12)
         outer.pack(fill=tk.BOTH, expand=True)
@@ -820,6 +960,7 @@ class SetupWindow(tk.Toplevel):
                 pass
 
         status_var.set(_("setup.paste_saved", n=account_num))
+        messagebox.showinfo(_("setup.paste_saved_title"), _("setup.paste_saved", n=account_num))
         if not gravity:
             messagebox.showwarning(_("setup.paste_warn_title"), _("setup.paste_missing_cookie"))
 
