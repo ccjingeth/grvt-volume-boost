@@ -787,20 +787,25 @@ class SetupWindow(tk.Toplevel):
         dialog.title(title)
         dialog.transient(self)
         dialog.grab_set()
-        _set_scaled_geometry(dialog, 620, 320)
+        _set_scaled_geometry(dialog, 620, 420)
+        dialog.minsize(_px(self, 520), _px(self, 360))
         dialog.resizable(True, True)
 
         outer = ttk.Frame(dialog, padding=12)
         outer.pack(fill=tk.BOTH, expand=True)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(1, weight=1)
 
-        ttk.Label(outer, text=body, wraplength=_px(self, 560), justify=tk.LEFT).pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(outer, text=body, wraplength=_px(self, 560), justify=tk.LEFT).grid(
+            row=0, column=0, sticky="w", pady=(0, 8)
+        )
         text = tk.Text(outer, height=8, wrap=tk.WORD)
-        text.pack(fill=tk.BOTH, expand=True)
+        text.grid(row=1, column=0, sticky="nsew")
         if initial:
             text.insert("1.0", initial)
 
         btns = ttk.Frame(outer)
-        btns.pack(fill=tk.X, pady=(8, 0))
+        btns.grid(row=2, column=0, sticky="e", pady=(10, 0))
 
         result: dict[str, str | None] = {"value": None}
 
@@ -813,6 +818,11 @@ class SetupWindow(tk.Toplevel):
 
         ttk.Button(btns, text=_("common.ok"), command=on_ok).pack(side=tk.RIGHT, padx=(6, 0))
         ttk.Button(btns, text=_("common.cancel"), command=on_cancel).pack(side=tk.RIGHT)
+
+        dialog.bind("<Command-Return>", lambda _e: on_ok())
+        dialog.bind("<Control-Return>", lambda _e: on_ok())
+        dialog.bind("<Escape>", lambda _e: on_cancel())
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
 
         dialog.wait_window()
         return result["value"]
